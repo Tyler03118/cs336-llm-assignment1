@@ -3,6 +3,7 @@ import regex as re
 import multiprocessing
 from collections import Counter, defaultdict
 from typing import BinaryIO
+from tqdm import tqdm
 
 # GPT-2 的预分词正则表达式
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -110,8 +111,10 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
                   
     word_counts = Counter()
     # 启动进程池，收集各个 chunk 的计数结果
+    print("🚀 Start Multiprocessing Pre-tokenization...")
     with multiprocessing.Pool(processes=num_processes) as pool:
-        for res in pool.imap_unordered(_worker_process, chunk_args):
+        # 用 tqdm 包裹迭代器，并传入 total 让进度条知道总共有多少个块
+        for res in tqdm(pool.imap_unordered(_worker_process, chunk_args), total=len(chunk_args), desc="Processing Chunks"):
             word_counts.update(res)
 
     # 3. 统计初始的相邻字节对频率 [cite: 165]
@@ -121,9 +124,9 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
             pair_counts[(word[i], word[i+1])] += count
 
     # 4. BPE 核心合并循环 [cite: 165, 166, 167]
-    for _ in range(num_merges):
+    print("🚀 Start BPE Merge Loop...")
+    for _ in tqdm(range(num_merges), desc="BPE Merges"):
         # 清理由于增量更新导致频率变为 0 或负数的键
-        # 这一步非常重要，能防止最大值函数意外选中无效的对
         keys_to_delete = [k for k, v in pair_counts.items() if v <= 0]
         for k in keys_to_delete:
             del pair_counts[k]

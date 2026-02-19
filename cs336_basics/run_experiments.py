@@ -49,7 +49,7 @@ def run_experiment(dataset_path, vocab_size, name):
 if __name__ == "__main__":
     # 1. 运行 TinyStories 实验 (10K vocab)
     run_experiment(
-        dataset_path="data/TinyStories.txt", # 替换为你的实际路径
+        dataset_path="data/TinyStoriesV2-GPT4-train.txt", # 替换为你的实际路径
         vocab_size=10000,
         name="tinystories"
     )
