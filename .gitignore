@@ -161,8 +161,8 @@ cython_debug/
 
 .ruff_cache/
 *.zip
+.DS_Store
 
-
+owt_valid.txt
 TinyStoriesV2-GPT4-train.txt
 TinyStoriesV2-GPT4-valid.txt
-.DS_Store

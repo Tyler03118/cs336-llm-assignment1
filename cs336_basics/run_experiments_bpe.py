@@ -3,6 +3,7 @@ import json
 import os
 from cs336_basics.train_bpe import train_bpe
 
+
 def save_tokenizer(vocab, merges, prefix):
     """Serialize vocabulary and merges to disk."""
     # 保存 Vocab (将 bytes 转换为可以被 JSON 序列化的 ISO-8859-1 字符串，或者直接存 hex)
@@ -49,9 +50,9 @@ def run_experiment(dataset_path, vocab_size, name):
 if __name__ == "__main__":
     # 1. 运行 TinyStories 实验 (10K vocab)
     run_experiment(
-        dataset_path="data/TinyStoriesV2-GPT4-train.txt", # 替换为你的实际路径
+        dataset_path="data/owt_valid.txt", # 替换为你的实际路径
         vocab_size=10000,
-        name="tinystories"
+        name="owt_valid"
     )
     
     # 注意：OpenWebText 的训练时间会非常长，建议先跑完 TinyStories 再跑 OWT
