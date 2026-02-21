@@ -2,6 +2,9 @@ import math
 import torch
 import torch.nn as nn
 from einops import einsum
+import torch.nn.functional as F
+from jaxtyping import Float, Int
+from torch import Tensor
 
 class Linear(nn.Module):
     def __init__(self, in_features: int, out_features: int, device=None, dtype=None):
@@ -93,3 +96,70 @@ class RMSNorm(nn.Module):
 
         # 4. 转回原始类型
         return result.to(in_dtype)
+
+
+class FNN(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):
+        super().__init__()
+        # 1. 计算硬件对齐的 d_ff
+        # 先算 8/3 * d_model
+        d_ff_raw = (8 / 3) * d_model
+        # 向上取整到 64 的倍数
+        self.d_ff = int(64 * math.ceil(d_ff_raw / 64))
+        
+        # 2. 定义三个线性层（不带 bias，符合主流 LLM 设计）
+        self.w1 = Linear(d_model, self.d_ff, device=device, dtype=dtype)
+        self.w3 = Linear(d_model, self.d_ff, device=device, dtype=dtype)
+        self.w2 = Linear(self.d_ff, d_model, device=device, dtype=dtype)
+        
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 按照SwiGLU公式 (7): W2(SiLU(W1x) * W3x)
+        
+        # 计算 W1x 和 W3x
+        x_w1 = self.w1(x) # (..., d_ff)
+        x_w3 = self.w3(x) # (..., d_ff)
+        
+        # 实现 SiLU(W1x) = x * sigmoid(x)
+        # 这里显式使用 torch.sigmoid 遵循作业的稳定性建议
+        gate = x_w1 * torch.sigmoid(x_w1)
+        
+        # 逐元素相乘并映射回 d_model
+        return self.w2(gate * x_w3)
+
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        super().__init__()
+        # 1. 频率计算：确保使用 float64 提高预计算精度，然后再转回 float32
+        # 公式: theta_i = theta ^ (-2i/d)
+        inv_freq = 1.0 / (theta ** (torch.arange(0, d_k, 2).float() / d_k))
+        
+        # 2. 生成时间步/位置向量
+        t = torch.arange(max_seq_len).float()
+        
+        # 3. 外积得到角度矩阵 (max_seq_len, d_k/2)
+        freqs = torch.outer(t, inv_freq)
+        
+        # 4. 关键：交替重复构造 (max_seq_len, d_k)
+        # 变成 [f1, f1, f2, f2, ...] 这种形式
+        emb = torch.stack((freqs, freqs), dim=-1).flatten(1)
+        
+        self.register_buffer("cos", emb.cos(), persistent=False)
+        self.register_buffer("sin", emb.sin(), persistent=False)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        # 获取切片后的 cos 和 sin
+        # 形状: (..., seq_len, d_k)
+        cos = self.cos[token_positions]
+        sin = self.sin[token_positions]
+        
+        # 5. 构造交替旋转项 [-x2, x1, -x4, x3, ...]
+        # 这种方式通常被称为 rotate_interleaved
+        x1 = x[..., 0::2] # 取偶数索引
+        x2 = x[..., 1::2] # 取奇数索引
+        
+        # 交替拼接：(-x2, x1)
+        rotated_x = torch.stack((-x2, x1), dim=-1).flatten(-2)
+        
+        # 应用公式: x*cos + rotate(x)*sin
+        return x * cos + rotated_x * sin
