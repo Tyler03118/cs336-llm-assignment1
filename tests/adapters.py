@@ -9,7 +9,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from cs336_basics.train_bpe import train_bpe
-from cs336_basics.module import Linear
+from cs336_basics.model import Linear, Embedding, RMSNorm
 
 
 def run_linear(
@@ -32,6 +32,7 @@ def run_linear(
     """
 
     model = Linear(in_features=d_in, out_features=d_out)
+    print("weights.shape", weights.shape)
     model.weight.data = weights
     return model(in_features)
 
@@ -55,7 +56,16 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    # 1. 实例化你手写的 Embedding 类
+    model = Embedding(num_embeddings=vocab_size, embedding_dim=d_model)
+    
+    # 2. 将测试用的标准权重加载进去，抹除随机性
+    model.weight.data = weights
+    
+    # 3. 运行前向传播
+    # 这里 token_ids 可以是 (batch_size, sequence_length)，
+    # 也可以是任意维度的整数张量，模型都会返回对应的向量
+    return model(token_ids)
 
 
 def run_swiglu(
@@ -382,7 +392,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    model = RMSNorm(d_model=d_model, eps=eps)
+    model.weight.data = weights
+    return model(in_features)
+    
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
