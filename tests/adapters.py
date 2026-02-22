@@ -9,7 +9,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from cs336_basics.train_bpe import train_bpe
-from cs336_basics.model import Linear, Embedding, RMSNorm, FNN, RotaryPositionalEmbedding
+from cs336_basics.model import Linear, Embedding, RMSNorm, FNN, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, CausalSelfAttention
 
 
 def run_linear(
@@ -122,7 +122,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q, K, V, mask=mask)
 
 
 def run_multihead_self_attention(
@@ -156,7 +156,32 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    # 1. 提取维度
+    batch_size, seq_len, d_in = in_features.shape
+    d_k = q_proj_weight.shape[0] // num_heads # 单个头的维度
+
+    # 2. 模拟单次矩阵乘法：合并权重
+    W_qkv = torch.cat([q_proj_weight, k_proj_weight, v_proj_weight], dim=0)
+    
+    # 3. 投影并直接重塑 (一次乘法解决)
+    # (b, s, d_in) @ (3*h*d_k, d_in).T -> (b, s, 3*h*d_k)
+    qkv = torch.matmul(in_features, W_qkv.T)
+    qkv = qkv.view(batch_size, seq_len, 3, num_heads, d_k)
+    
+    # 4. 拆分并转置为 (b, h, s, d_k)
+    q, k, v = qkv.unbind(dim=2)
+    q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+
+    # 5. 因果掩码 (修正后的逻辑)
+    indices = torch.arange(seq_len, device=in_features.device)
+    mask = indices.unsqueeze(0) <= indices.unsqueeze(1) 
+
+    # 6. 注意力计算 (不带 RoPE)
+    attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
+
+    # 7. 合并多头并应用输出投影
+    concat_out = attn_out.transpose(1, 2).reshape(batch_size, seq_len, -1)
+    return torch.matmul(concat_out, o_proj_weight.T)
 
 
 def run_multihead_self_attention_with_rope(
@@ -196,7 +221,27 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    # 1. 前期投影和拆分逻辑同上...
+    batch_size, seq_len, _ = in_features.shape
+    d_k = q_proj_weight.shape[0] // num_heads
+    W_qkv = torch.cat([q_proj_weight, k_proj_weight, v_proj_weight], dim=0)
+    qkv = torch.matmul(in_features, W_qkv.T).view(batch_size, seq_len, 3, num_heads, d_k)
+    q, k, v = qkv.unbind(dim=2)
+    q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+
+    # 2. 应用 RoPE
+    rope = RotaryPositionalEmbedding(theta, d_k, max_seq_len, device=in_features.device)
+    q = rope(q, token_positions.unsqueeze(1)) # 扩展维度以广播到所有头
+    k = rope(k, token_positions.unsqueeze(1))
+
+    # 3. 掩码与 SDPA
+    indices = torch.arange(seq_len, device=in_features.device)
+    mask = indices.unsqueeze(0) <= indices.unsqueeze(1)
+    attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
+
+    # 4. 输出投影
+    concat_out = attn_out.transpose(1, 2).reshape(batch_size, seq_len, -1)
+    return torch.matmul(concat_out, o_proj_weight.T)
 
 
 def run_rope(
@@ -453,7 +498,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(

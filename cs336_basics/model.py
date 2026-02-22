@@ -5,6 +5,7 @@ from einops import einsum
 import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor
+from typing import Optional
 
 class Linear(nn.Module):
     def __init__(self, in_features: int, out_features: int, device=None, dtype=None):
@@ -163,3 +164,114 @@ class RotaryPositionalEmbedding(nn.Module):
         
         # 应用公式: x*cos + rotate(x)*sin
         return x * cos + rotated_x * sin
+
+def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+    """
+    对输入张量的指定维度应用 Softmax 运算
+    
+    Args:
+        x (torch.Tensor): 输入张量。
+        dim (int): 需要进行 Softmax 的维度。
+        
+    Returns:
+        torch.Tensor: 形状与 x 相同，但指定维度被归一化为概率分布
+    """
+    # 1. 寻找指定维度上的最大值
+    # keepdim=True 是关键，它能保持维度数量不变，从而允许自动广播减法
+    max_val = torch.max(x, dim=dim, keepdim=True)[0]
+    
+    # 2. 减去最大值（数值稳定性技巧：防止 exp(x) 变成 inf）
+    x_stable = x - max_val
+    
+    # 3. 计算指数
+    exp_x = torch.exp(x_stable)
+    
+    # 4. 归一化：除以该维度上所有指数值的总和
+    sum_exp = torch.sum(exp_x, dim=dim, keepdim=True)
+    
+    return exp_x / sum_exp
+
+
+def scaled_dot_product_attention(
+    Q: torch.Tensor, 
+    K: torch.Tensor, 
+    V: torch.Tensor, 
+    mask: torch.Tensor = None
+) -> torch.Tensor:
+    d_k = Q.shape[-1]
+    
+    # 1. 计算 Q @ K.T 并缩放
+    # Q 形状: (..., n, d_k)
+    # K 形状: (..., m, d_k)
+    # 我们需要将 K 的最后两个维度转置，变成 (..., d_k, m) 才能进行矩阵乘法
+    # 结果形状: (..., n, m)
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+    
+    # 2. 应用掩码
+    if mask is not None:
+        # mask 为 False 的位置填充为负无穷
+        scores = scores.masked_fill(~mask, float("-inf"))
+    
+    # 3. 归一化
+    # 使用你手写的 Softmax
+    weights = softmax(scores, dim=-1)
+    
+    # 4. 加权求和得到输出
+    # weights 形状: (..., n, m)
+    # V 形状: (..., m, d_v)
+    # 结果形状: (..., n, d_v)
+    return torch.matmul(weights, V)
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, theta: float, max_seq_len: int, device=None, dtype=None):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        # 按照要求设置 dk = dv = dmodel / h
+        self.d_k = d_model // num_heads
+        self.d_v = d_model // num_heads
+        
+        # 1. 定义 Q, K, V 的线性投影层
+        self.W_q = Linear(d_model, num_heads * self.d_k, device=device, dtype=dtype)
+        self.W_k = Linear(d_model, num_heads * self.d_k, device=device, dtype=dtype)
+        self.W_v = Linear(d_model, num_heads * self.d_v, device=device, dtype=dtype)
+        
+        # 2. 定义输出投影层 W_O
+        self.W_o = Linear(num_heads * self.d_v, d_model, device=device, dtype=dtype)
+        
+        # 3. 实例化旋转位置编码模块
+        self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len, device=device)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        # x 形状: (batch, seq_len, d_model)
+        batch_size, seq_len, _ = x.shape
+        
+        # A. 投影并切分为多头
+        # 形状变化: (b, s, d_m) -> (b, s, h, d_k) -> (b, h, s, d_k)
+        q = self.W_q(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        k = self.W_k(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        v = self.W_v(x).view(batch_size, seq_len, self.num_heads, self.d_v).transpose(1, 2)
+        
+        # B. 对 Q 和 K 应用 RoPE
+        # 注意：RoPE 将头维度视为 Batch，因此位置向量需要扩展维度以对齐
+        # token_positions 形状 (b, s) -> (b, 1, s) 从而广播到所有头
+        q = self.rope(q, token_positions.unsqueeze(1))
+        k = self.rope(k, token_positions.unsqueeze(1))
+        
+        # C. 构造因果掩码 (Causal Mask)
+        # 形状 (seq_len, seq_len)，确保 j <= i 为 True
+        # 构建下三角矩阵
+        indices = torch.arange(seq_len, device=x.device)
+        mask = indices.unsqueeze(0) <= indices.unsqueeze(1)
+        
+        # D. 调用缩放点积注意力
+        # 输出形状: (batch, num_heads, seq_len, d_v)
+        attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
+        
+        # E. 合并多头并应用 W_O
+        # (b, h, s, d_v) -> (b, s, h, d_v) -> (b, s, h * d_v)
+        concat_out = attn_out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+        
+        return self.W_o(concat_out)
+
+
