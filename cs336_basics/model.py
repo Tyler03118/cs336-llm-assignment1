@@ -99,14 +99,17 @@ class RMSNorm(nn.Module):
         return result.to(in_dtype)
 
 
-class FNN(nn.Module):
+class FFN(nn.Module):
     def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):
         super().__init__()
         # 1. 计算硬件对齐的 d_ff
         # 先算 8/3 * d_model
-        d_ff_raw = (8 / 3) * d_model
         # 向上取整到 64 的倍数
-        self.d_ff = int(64 * math.ceil(d_ff_raw / 64))
+        if d_ff is None:
+            d_ff_raw = (8 / 3) * d_model
+            self.d_ff = int(64 * math.ceil(d_ff_raw / 64))
+        else:
+            self.d_ff = d_ff
         
         # 2. 定义三个线性层（不带 bias，符合主流 LLM 设计）
         self.w1 = Linear(d_model, self.d_ff, device=device, dtype=dtype)
@@ -149,7 +152,7 @@ class RotaryPositionalEmbedding(nn.Module):
         self.register_buffer("sin", emb.sin(), persistent=False)
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
-        # 获取切片后的 cos 和 sin
+        # 获取切片后的 cos 和 sin, 定位旋转角度
         # 形状: (..., seq_len, d_k)
         cos = self.cos[token_positions]
         sin = self.sin[token_positions]
@@ -274,4 +277,131 @@ class CausalSelfAttention(nn.Module):
         
         return self.W_o(concat_out)
 
+# Transformer Block
+class TransformerBlock(nn.Module):
+    def __init__(
+        self, 
+        d_model: int, 
+        num_heads: int, 
+        d_ff: int, 
+        theta: float, 
+        max_seq_len: int, 
+        device=None, 
+        dtype=None
+    ):
+        super().__init__()
+        
+        # 1. 注意力子层的组件
+        # Attention前面的RMSNorm
+        self.norm1 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.mha = CausalSelfAttention(
+            d_model=d_model, 
+            num_heads=num_heads, 
+            theta=theta, 
+            max_seq_len=max_seq_len, 
+            device=device, 
+            dtype=dtype
+        )
+        
+        # 2. 前馈神经网络子层的组件
+        # FFN前面的RMSNorm
+        self.norm2 = RMSNorm(d_model, device=device, dtype=dtype)
+        # 注意：这里调用的是你之前定义的 FFN 类
+        self.ffn = FFN(d_model=d_model, d_ff=d_ff, device=device, dtype=dtype)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        """
+        x 形状: (batch_size, seq_len, d_model)
+        token_positions 形状: (batch_size, seq_len)
+        """
+        # 子层 1: Multi-Head Attention + 残差连接
+        # 公式: y = x + MultiHeadSelfAttention(RMSNorm(x))
+        x_norm1 = self.norm1(x)
+        attn_out = self.mha(x_norm1, token_positions)
+        h = x + attn_out
+        
+        # 子层 2: Feed-Forward Network + 残差连接
+        # 公式: z = h + FFN(RMSNorm(h))
+        h_norm2 = self.norm2(h)
+        ffn_out = self.ffn(h_norm2)
+        out = h + ffn_out
+        
+        return out
+
+
+class TransformerLM(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,
+        d_model: int,
+        num_layers: int,
+        num_heads: int,
+        d_ff: int,
+        theta: float,
+        device=None,
+        dtype=None
+    ):
+        super().__init__()
+        
+        # 1. 词嵌入层 (Token Embedding)
+        # 将输入的 Token ID 转换为 d_model 维度的稠密向量
+        self.token_embedding = Embedding(
+            num_embeddings=vocab_size, 
+            embedding_dim=d_model, 
+            device=device, 
+            dtype=dtype
+        )
+        
+        # 2. Transformer 块列表 (N 层堆叠)
+        # 使用 nn.ModuleList 来注册多层，确保 PyTorch 能正确追踪参数
+        self.layers = nn.ModuleList([
+            TransformerBlock(
+                d_model=d_model,
+                num_heads=num_heads,
+                d_ff=d_ff,
+                theta=theta,
+                max_seq_len=context_length, # context_length 对应 RoPE 的最大序列长度
+                device=device,
+                dtype=dtype
+            ) for _ in range(num_layers)
+        ])
+        
+        # 3. 最终层归一化 (Final Layer Norm)
+        self.final_norm = RMSNorm(d_model, device=device, dtype=dtype)
+        
+        # 4. 语言模型头 (LM Head)
+        # 将 d_model 维度的特征映射回 vocab_size，以输出每个词的概率预测
+        self.lm_head = Linear(
+            in_features=d_model, 
+            out_features=vocab_size, 
+            device=device, 
+            dtype=dtype
+        )
+
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """
+        token_ids 形状: (batch_size, seq_len)
+        """
+        batch_size, seq_len = token_ids.shape
+        
+        # 生成 token_positions，用于 RoPE 位置编码
+        # 形状: (seq_len) -> (1, seq_len) -> (batch_size, seq_len)
+        token_positions = torch.arange(seq_len, device=token_ids.device)
+        token_positions = token_positions.unsqueeze(0).expand(batch_size, seq_len)
+        
+        # 1. 获取词嵌入向量: (batch_size, seq_len, d_model)
+        x = self.token_embedding(token_ids)
+        
+        # 2. 依次穿过所有的 Transformer Block
+        for layer in self.layers:
+            x = layer(x, token_positions)
+            
+        # 3. 应用最终的 RMSNorm
+        x = self.final_norm(x)
+        
+        # 4. 映射到词表空间得到 Logits: (batch_size, seq_len, vocab_size)
+        logits = self.lm_head(x)
+        
+        return logits
 

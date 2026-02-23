@@ -9,7 +9,8 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from cs336_basics.train_bpe import train_bpe
-from cs336_basics.model import Linear, Embedding, RMSNorm, FNN, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, CausalSelfAttention
+from cs336_basics.model import Linear, Embedding, RMSNorm, FFN, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, CausalSelfAttention, TransformerBlock, TransformerLM
+
 
 
 def run_linear(
@@ -97,7 +98,7 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    model = FNN(d_model=d_model, d_ff=d_ff)
+    model = FFN(d_model=d_model, d_ff=d_ff)
     model.w1.weight.data = w1_weight
     model.w2.weight.data = w2_weight
     model.w3.weight.data = w3_weight
@@ -337,7 +338,46 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    # 1. 实例化模块，此时传入确定的 d_ff=128
+    block = TransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        theta=theta,
+        max_seq_len=max_seq_len,
+        device=in_features.device,
+        dtype=in_features.dtype
+    )
+    
+    # 2. 映射权重名称
+    name_mapping = {
+        "ln1.weight": "norm1.weight",
+        "ln2.weight": "norm2.weight",
+        "attn.q_proj.weight": "mha.W_q.weight",
+        "attn.k_proj.weight": "mha.W_k.weight",
+        "attn.v_proj.weight": "mha.W_v.weight",
+        "attn.output_proj.weight": "mha.W_o.weight",
+        # ffn 的权重名通常是一致的，如果不一致也需要映射
+        "ffn.w1.weight": "ffn.w1.weight",
+        "ffn.w2.weight": "ffn.w2.weight",
+        "ffn.w3.weight": "ffn.w3.weight",
+    }
+    
+    mapped_weights = {}
+    for k, v in weights.items():
+        if k in name_mapping:
+            mapped_weights[name_mapping[k]] = v
+        else:
+            mapped_weights[k] = v
+            
+    # 3. 加载映射后的权重
+    block.load_state_dict(mapped_weights)
+    
+    # 4. 构造位置索引 (RoPE 必须)
+    batch_size, seq_len, _ = in_features.shape
+    token_positions = torch.arange(seq_len, device=in_features.device).unsqueeze(0).expand(batch_size, seq_len)
+    
+    return block(in_features, token_positions)
 
 
 def run_transformer_lm(
@@ -419,7 +459,47 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    # 1. 实例化模型
+    model = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        theta=rope_theta,
+        device=in_indices.device,
+        dtype=in_indices.dtype if in_indices.is_floating_point() else weights["token_embeddings.weight"].dtype
+    )
+
+    # 2. 权重名称翻译器 (Mapping)
+    # 我们需要将测试权重的名字映射到我们类内部定义的变量名
+    mapped_weights = {}
+    for k, v in weights.items():
+        new_k = k
+        # 处理每一层的名称映射
+        # 注意：这里假设你的 TransformerLM 里的 nn.ModuleList 变量名叫 layers
+        new_k = new_k.replace("ln1", "norm1")
+        new_k = new_k.replace("ln2", "norm2")
+        new_k = new_k.replace("attn.q_proj", "mha.W_q")
+        new_k = new_k.replace("attn.k_proj", "mha.W_k")
+        new_k = new_k.replace("attn.v_proj", "mha.W_v")
+        new_k = new_k.replace("attn.output_proj", "mha.W_o")
+        
+        # 处理全局组件的名称映射
+        new_k = new_k.replace("token_embeddings", "token_embedding")
+        new_k = new_k.replace("ln_final", "final_norm")
+        # lm_head 的名字通常一致，如果不一致也需要加上映射
+        
+        mapped_weights[new_k] = v
+
+    # 3. 加载映射后的权重
+    model.load_state_dict(mapped_weights)
+
+    # 4. 运行模型
+    # 注意：我们的 TransformerLM.forward 只接收 token_ids
+    # 内部会自动通过 torch.arange 构造 token_positions
+    return model(in_indices)
 
 
 def run_rmsnorm(
