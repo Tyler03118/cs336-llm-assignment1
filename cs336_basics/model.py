@@ -405,3 +405,34 @@ class TransformerLM(nn.Module):
         
         return logits
 
+
+def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """
+    计算交叉熵损失。
+    
+    参数:
+        logits: 形状为 (..., vocab_size) 的预测分值
+        targets: 形状为 (...) 的真实标签索引
+    """
+    # 1. 数值稳定性处理：减去每个位置的最大值
+    # keepdim=True 保证减法时的广播正确
+    max_logits = torch.max(logits, dim=-1, keepdim=True).values
+    stable_logits = logits - max_logits
+    
+    # 2. 提取正确类别的 logit (即公式中的 oi[xi+1])
+    # 使用 gather 将 target 对应的 logit 拿出来
+    # 假设 targets 形状为 (B, S)，logits 形状为 (B, S, V)
+    # 我们需要在最后一个维度进行 gather
+    target_logits = torch.gather(stable_logits, dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+    
+    # 3. 计算 log-sum-exp 部分
+    # 公式: log(sum(exp(stable_logits)))
+    log_sum_exp = torch.log(torch.sum(torch.exp(stable_logits), dim=-1))
+    
+    # 4. 计算负对数似然 (NLL)
+    # ℓ = -(target_logit - log_sum_exp) = log_sum_exp - target_logit
+    # 注意：这里我们已经减去了 max_logits，但它在分子分母中相互抵消了
+    loss_per_token = log_sum_exp - target_logits
+    
+    # 5. 返回所有 batch 维度的平均值
+    return torch.mean(loss_per_token)
