@@ -48,3 +48,44 @@ gunzip owt_valid.txt.gz
 cd ..
 ```
 
+### Data pipeline
+
+
+We use a BPE tokenizer with a vocabulary size of 10,000 for the TinyStories dataset.
+
+Train BPE: uv run cs336_basics/train_bpe.py
+
+Preprocess Text: Use the multi-processing script to convert .txt to memory-mapped .npy arrays.
+
+```sh
+uv run tokenize_data.py --input data/train.txt --output data/train.npy
+```
+
+## Training Experiments
+
+### Model Specifications (17M Parameters)
+Our "Base Model" follows these architectural constraints:
+- **Dimensions**: $d_{model}=512$, $d_{ff}=1344$
+- **Structure**: 4 layers, 16 attention heads
+- **Context**: 256 tokens
+- **Positional Encoding**: RoPE with $\theta=10000$
+
+### Training Options
+
+#### Option A: Low-Resource (Apple Silicon / MPS)
+Optimized for MacBook M1/M2/M3 Pro/Max. This config processes ~40M tokens.
+- **Target Val Loss**: < 2.00
+- **Acceleration**: Enabled via `torch.compile(backend="aot_eager")`
+
+```bash
+uv run python cs336_basics/train.py --device mps --learning_rate 1e-3 --max_iters 5000
+```
+
+#### Option B: High-Performance (NVIDIA CUDA)
+Recommended for H100, A40, or RTX 4090 to reach the full 327M tokens goal.
+- **Target Val Loss**: < 1.45
+- **Optimization**: TF32 matmul precision enabled
+
+```bash
+uv run python cs336_basics/train.py --device cuda --batch_size 128 --max_iters 10000 --learning_rate 1e-3
+```

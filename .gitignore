@@ -163,6 +163,12 @@ cython_debug/
 *.zip
 .DS_Store
 
-owt_valid.txt
-TinyStoriesV2-GPT4-train.txt
-TinyStoriesV2-GPT4-valid.txt
+# 数据集
+data/
+
+# 模型权重与输出
+out/
+*.pt
+
+# 实验日志
+wandb/
