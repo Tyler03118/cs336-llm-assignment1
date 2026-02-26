@@ -3,6 +3,8 @@ import argparse
 import time
 import numpy as np
 import torch
+from dotenv import load_dotenv
+import wandb
 
 # 假设你把之前写的组件都放在了这些文件里，请根据实际情况修改
 from model import TransformerLM, cross_entropy
@@ -69,6 +71,17 @@ def main():
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
+    # 初始化 W&B
+    wandb.init(
+        project="transformer-assignment-1", # 项目名
+        entity="zijili-georgia-institute-of-technology", # 你的实体名
+        name=f"17M_exp_lr{args.learning_rate}_bs{args.batch_size}", # 实验名
+        config=vars(args) # 自动保存所有 argparse 的超参数
+    )
+
+    # 记录训练开始的墙上时间
+    training_start_time = time.time()
+
     # 1. 内存映射方式加载数据 (Memory-efficient loading)
     # 注意：确保这里的 dtype 与你生成 npy 文件时的 dtype 一致 (通常是 uint16 或 int32)
     train_data = np.memmap(args.train_data, dtype=np.uint16, mode='r')
@@ -120,12 +133,26 @@ def main():
         # G. 定期评估并保存 Checkpoint
         if iter_num % args.eval_interval == 0 or iter_num == args.max_iters:
             losses = estimate_loss(model, train_data, val_data, args.eval_iters, args.batch_size, args.context_length, args.device)
+            
+            # 计算总运行时间 (Wallclock time)
+            total_elapsed_time = time.time() - training_start_time
+            
+            # 记录到 W&B
+            wandb.log({
+                "step": iter_num,                # 梯度步数
+                "train/loss": losses['train'],   # 训练集损失
+                "val/loss": losses['val'],       # 验证集损失
+                "lr": lr,                        # 学习率
+                "wallclock_time": total_elapsed_time, # 总耗时
+            })
+
             dt = time.time() - t0
             print(f"Iter {iter_num:4d} | Train Loss {losses['train']:.4f} | Val Loss {losses['val']:.4f} | LR {lr:.4e} | Time {dt:.2f}s")
             
             ckpt_path = os.path.join(args.out_dir, f"ckpt_{iter_num}.pt")
             save_checkpoint(model, optimizer, iter_num, ckpt_path)
             t0 = time.time() # 重置计时器
+    wandb.finish()
 
 if __name__ == '__main__':
     main()

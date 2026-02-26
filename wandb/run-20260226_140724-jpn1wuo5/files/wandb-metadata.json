@@ -1,0 +1,17 @@
+{
+  "os":  "macOS-26.3-arm64-arm-64bit",
+  "python":  "CPython 3.11.4",
+  "startedAt":  "2026-02-26T19:07:24.361800Z",
+  "program":  "/Users/ziji/CS336LLM/assignment1-basics/cs336_basics/wandb_test.py",
+  "codePath":  "cs336_basics/wandb_test.py",
+  "codePathLocal":  "cs336_basics/wandb_test.py",
+  "git":  {
+    "remote":  "https://github.com/Tyler03118/cs336-llm-assignment1.git",
+    "commit":  "94e8fba42620fe703f3fcd157a4b2c5a59c88f70"
+  },
+  "email":  "lzj1959797276@gmail.com",
+  "root":  "/Users/ziji/CS336LLM/assignment1-basics",
+  "host":  "FlexHub.local",
+  "executable":  "/Users/ziji/CS336LLM/assignment1-basics/.venv/bin/python",
+  "writerId":  "vi6eceoj1orgf12uu5485shdm4vlot8n"
+}
