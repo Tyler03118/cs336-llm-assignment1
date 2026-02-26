@@ -113,4 +113,4 @@ input_ids = torch.tensor([tokenizer.encode(prompt)], device=device)
 
 print(f"\n--- Generating for prompt: \"{prompt}\" ---")
 output_ids = generate_with_eot(model, input_ids, max_new_tokens=256, temperature=0.8, top_p=0.9, eot_id=eot_id)
-print(tokenizer.decode(output_ids[0].tolist()))
+# print(tokenizer.decode(output_ids[0].tolist())) # Using stream output now
