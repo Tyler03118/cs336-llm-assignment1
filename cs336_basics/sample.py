@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from model import TransformerLM
 from tokenizer import Tokenizer
+from checkpoint import load_checkpoint, find_latest_checkpoint
 
 def top_p_sampling(logits, top_p=0.9):
     """核采样 (Nucleus Sampling) 逻辑"""
@@ -35,8 +36,11 @@ def generate(model, idx, max_new_tokens, temperature=1.0, top_p=0.9):
             logits = top_p_sampling(logits, top_p=top_p)
             
         probs = F.softmax(logits, dim=-1)
+
+        # 根据概率分布进行随机采样
         idx_next = torch.multinomial(probs, num_samples=1)
         
+        # 将刚才采样得到的 idx_next（新词的 ID）拼接在现有序列 idx 的末尾
         idx = torch.cat((idx, idx_next), dim=1)
         
         # 如果生成了 <|endoftext|> 则提前停止
@@ -50,28 +54,12 @@ device = 'mps' # 你的 Mac 环境
 tokenizer = Tokenizer.from_files("tinystories_vocab.json", "tinystories_merges.txt", special_tokens=["<|endoftext|>"])
 eot_id = tokenizer.encode("<|endoftext|>")[0]
 
-# 加载最新的 checkpoint (请根据你的 out 目录下的文件调整 iter 数)
-checkpoint_path = "out/ckpt_iter2750.pt" 
-if not torch.os.path.exists(checkpoint_path):
-    # 尝试找一个存在的
-    import glob
-    ckpts = sorted(glob.glob("out/ckpt_iter*.pt"), key=lambda x: int(x.split("iter")[-1].split(".")[0]))
-    if ckpts:
-        checkpoint_path = ckpts[-1]
-    else:
-        raise FileNotFoundError("No checkpoints found in 'out/' directory.")
+# 核心修复：使用 checkpoint 工具函数加载
+checkpoint_path = find_latest_checkpoint("out")
+if not checkpoint_path:
+    raise FileNotFoundError("No checkpoints found in 'out/' directory.")
 
 print(f"Loading checkpoint from {checkpoint_path}...")
-checkpoint = torch.load(checkpoint_path, map_location=device)
-
-# 1. 获取原始的 state_dict
-state_dict = checkpoint['model_state_dict']
-
-# 2. 核心修复：创建一个新的 state_dict，去掉 _orig_mod. 前缀
-new_state_dict = {}
-for k, v in state_dict.items():
-    name = k.replace("_orig_mod.", "") # 去掉 compile 产生的装饰器前缀
-    new_state_dict[name] = v
 
 # 必须与 train.py 中的参数完全一致
 model = TransformerLM(
@@ -84,11 +72,9 @@ model = TransformerLM(
     theta=10000.0
 )
 
-# 3. 加载修复后的权重
-model.load_state_dict(new_state_dict)
+# 使用 checkpoint.py 中的 load_checkpoint，它已经处理了 _orig_mod. 前缀
+load_checkpoint(checkpoint_path, model)
 model.to(device)
-
-
 
 def generate_with_eot(model, idx, max_new_tokens, temperature=1.0, top_p=0.9, eot_id=None):
     """带 EOT 停止逻辑的生成"""

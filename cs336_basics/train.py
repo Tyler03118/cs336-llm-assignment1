@@ -130,6 +130,7 @@ def main():
         shift_labels = Y[:, :-1].contiguous()
         loss = cross_entropy(shift_logits, shift_labels)
 
+
         # C. 反向传播
         optimizer.zero_grad()
         loss.backward()
